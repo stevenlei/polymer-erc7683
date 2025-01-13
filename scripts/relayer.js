@@ -73,6 +73,29 @@ class ChainListener {
           )
         );
 
+        // Log the original structure of the Open event
+        console.log(chalk.blue("\n📋 Open Event Structure:"));
+        console.log(chalk.cyan("ResolvedCrossChainOrder:"));
+        console.log(chalk.cyan(`>  User: ${chalk.bold(resolvedOrder.user)}`));
+        console.log(
+          chalk.cyan(
+            `>  Origin Chain ID: ${chalk.bold(resolvedOrder.originChainId)}`
+          )
+        );
+        console.log(
+          chalk.cyan(
+            `>  Open Deadline: ${chalk.bold(resolvedOrder.openDeadline)}`
+          )
+        );
+        console.log(
+          chalk.cyan(
+            `>  Fill Deadline: ${chalk.bold(resolvedOrder.fillDeadline)}`
+          )
+        );
+        console.log(
+          chalk.cyan(`>  Order ID: ${chalk.bold(resolvedOrder.orderId)}`)
+        );
+
         // Process each fill instruction
         for (const instruction of resolvedOrder.fillInstructions) {
           console.log(chalk.yellow(`\n📝 Processing fill instruction:`));
