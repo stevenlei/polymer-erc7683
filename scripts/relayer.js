@@ -49,6 +49,21 @@ class ChainListener {
       chalk.yellow(`>  Current block number: ${chalk.bold(latestBlock)}`)
     );
 
+    // Listen for FillerRepaid events
+    this.contract.on("FillerRepaid", async (orderId, filler, event) => {
+      console.log(
+        chalk.green(
+          `\n✅ Filler repayment confirmed for order ${chalk.bold(orderId)}`
+        )
+      );
+      console.log(chalk.cyan(`>  Filler address: ${chalk.bold(filler)}`));
+      console.log(
+        chalk.cyan(
+          `>  Transaction hash: ${chalk.bold(event.log.transactionHash)}`
+        )
+      );
+    });
+
     // Listen for Open events from the Origin Settler
     this.contract.on("Open", async (orderId, resolvedOrder, event) => {
       try {
@@ -148,20 +163,6 @@ class ChainListener {
             continue;
           }
 
-          // Get proof from Polymer API
-          const proofResponse = await axios.post(
-            `${POLYMER_API_URL}/v1/proof`,
-            {
-              chainId: this.config.chainId,
-              blockHash: event.log.blockHash,
-              transactionHash: event.log.transactionHash,
-              logIndex: event.log.index,
-            }
-          );
-
-          const proof = proofResponse.data;
-          console.log(chalk.green(`✅ Got proof from Polymer API`));
-
           // Connect to destination chain
           const destProvider = new ethers.JsonRpcProvider(destChain.rpcUrl);
           const destWallet = this.wallet.connect(destProvider);
@@ -179,8 +180,126 @@ class ChainListener {
           );
 
           console.log(chalk.green(`✅ Fill transaction sent: ${fillTx.hash}`));
-          await fillTx.wait();
+          const fillReceipt = await fillTx.wait();
           console.log(chalk.green(`✅ Fill transaction confirmed!`));
+
+          // Get the position of the transaction in the block
+          const positionInBlock = fillReceipt.index;
+
+          // Find the index of CounterIncremented event in the logs
+          const counterIncrementedIndex = fillReceipt.logs.findIndex(
+            (log) =>
+              log.topics[0] === ethers.id("CounterIncremented(uint256,uint256)")
+          );
+
+          if (counterIncrementedIndex === -1) {
+            throw new Error("CounterIncremented event not found in logs");
+          }
+
+          console.log(chalk.yellow("\n⚡️ Starting repayment process..."));
+
+          console.log(
+            chalk.cyan(`>  Event position in block: ${positionInBlock}`)
+          );
+          console.log(
+            chalk.cyan(`>  Event log index: ${counterIncrementedIndex}`)
+          );
+
+          // Request proof from Polymer API
+          console.log(chalk.yellow(`>  Requesting proof from Polymer API...`));
+          const proofRequest = await axios.post(
+            POLYMER_API_URL,
+            {
+              jsonrpc: "2.0",
+              id: 1,
+              method: "receipt_requestProof",
+              params: [
+                destChain.chainId,
+                this.config.chainId,
+                fillReceipt.blockNumber,
+                positionInBlock,
+              ],
+            },
+            {
+              headers: {
+                Authorization: `Bearer ${process.env.POLYMER_API_KEY}`,
+              },
+            }
+          );
+
+          if (proofRequest.status !== 200) {
+            throw new Error(
+              `Failed to get proof from Polymer API. Status code: ${proofRequest.status}`
+            );
+          }
+
+          const jobId = proofRequest.data.result;
+
+          console.log(
+            chalk.green(`✅ Proof requested. Job ID: ${chalk.bold(jobId)}`)
+          );
+
+          // Wait for the proof to be generated
+          console.log(chalk.yellow(`>  Waiting for proof to be generated...`));
+
+          // Check proof after 10 seconds for the first time, then every 5 seconds
+          let proofResponse;
+          let attempts = 0;
+          const delay = attempts === 0 ? 10000 : 5000;
+          while (!proofResponse?.data || !proofResponse?.data?.result?.proof) {
+            if (attempts >= 10) {
+              throw new Error(`Failed to get proof from Polymer API`);
+            }
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            proofResponse = await axios.post(
+              POLYMER_API_URL,
+              {
+                jsonrpc: "2.0",
+                id: 1,
+                method: "receipt_queryProof",
+                params: [jobId],
+              },
+              {
+                headers: {
+                  Authorization: `Bearer ${process.env.POLYMER_API_KEY}`,
+                },
+              }
+            );
+
+            console.log(
+              `>  Proof status: ${proofResponse.data.result.status}...`
+            );
+            attempts++;
+          }
+
+          const proof = proofResponse.data.result.proof;
+          console.log(
+            chalk.green(
+              `✅ Proof received. Length: ${chalk.bold(proof.length)} bytes`
+            )
+          );
+
+          const proofInBytes = `0x${Buffer.from(proof, "base64").toString(
+            "hex"
+          )}`;
+
+          // Call repayFiller on the origin chain
+          console.log(
+            chalk.yellow(`\n💰 Calling repayFiller on origin chain...`)
+          );
+
+          const repayTx = await this.contract.repayFiller(
+            orderId,
+            this.wallet.address,
+            counterIncrementedIndex,
+            proofInBytes
+          );
+
+          console.log(
+            chalk.green(`✅ RepayFiller transaction sent: ${repayTx.hash}`)
+          );
+          console.log(chalk.yellow(`>  Waiting for FillerRepaid event...`));
+          await repayTx.wait();
 
           // Mark this event as processed
           this.processedOrders.add(eventId);

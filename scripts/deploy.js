@@ -6,12 +6,12 @@ const fs = require("fs");
 const path = require("path");
 
 async function main() {
+  // Get the network name from Hardhat's config
   const networkName = hre.network.name;
   const chainId = hre.network.config.chainId;
-
   console.log(
     chalk.blue(
-      `🌐 Connected to network: ${chalk.bold(networkName)} (${chainId})`
+      `🌐 Deploying to network: ${chalk.bold(networkName)} (${chainId})`
     )
   );
 
@@ -21,26 +21,46 @@ async function main() {
     baseSepolia: "BASE_SEPOLIA_CONTRACT_ADDRESS",
   };
 
+  // Get the Polymer Prover address based on the network
+  let polymerProverAddress;
+  if (chainId === 11155420) {
+    // Optimism Sepolia
+    polymerProverAddress =
+      process.env.POLYMER_PROVER_OPTIMISM_TESTNET_CONTRACT_ADDRESS;
+  } else if (chainId === 84532) {
+    // Base Sepolia
+    polymerProverAddress =
+      process.env.POLYMER_PROVER_BASE_TESTNET_CONTRACT_ADDRESS;
+  } else {
+    throw new Error("Unsupported network");
+  }
+
+  console.log(
+    chalk.cyan(
+      `🔗 Using Polymer Prover address: ${chalk.bold(polymerProverAddress)}`
+    )
+  );
+
   // Deploy the CrossChainCounter contract
   console.log(chalk.yellow("\n📄 Deploying CrossChainCounter..."));
   const CrossChainCounter = await ethers.getContractFactory(
     "CrossChainCounter"
   );
 
-  // Deploy the contract
-  const contract = await CrossChainCounter.deploy();
+  // Deploy the contract with Polymer Prover address
+  const contract = await CrossChainCounter.deploy(polymerProverAddress);
 
   // Wait for deployment
   console.log(chalk.yellow("⏳ Waiting for deployment..."));
   await contract.waitForDeployment();
-  const address = await contract.getAddress();
 
+  const address = await contract.getAddress();
   console.log(
     chalk.green(`✅ CrossChainCounter deployed to: ${chalk.bold(address)}`)
   );
 
   // Wait for a few block confirmations
-  console.log(chalk.yellow("\n⏳ Waiting for confirmations..."));
+  console.log(chalk.yellow("⏳ Waiting for confirmations..."));
   const tx = await contract.deploymentTransaction();
   await tx.wait(5);
   console.log(chalk.green("🎉 Deployment confirmed!"));
@@ -49,39 +69,28 @@ async function main() {
   const envKey = networkToEnvKey[networkName];
   if (envKey) {
     const envPath = path.join(__dirname, "../.env");
-    let envContent = "";
+    let envContent = fs.readFileSync(envPath, "utf8");
 
-    // Read existing .env content if file exists
-    if (fs.existsSync(envPath)) {
-      envContent = fs.readFileSync(envPath, "utf8");
-    }
-
-    // Prepare the new entry
-    const newEntry = `${envKey}=${address}`;
-
-    // Check if the key already exists
-    const envRegex = new RegExp(`^${envKey}=.*$`, "m");
+    const envRegex = new RegExp(`${envKey}=.*`, "g");
     if (envContent.match(envRegex)) {
       // Update existing entry
-      envContent = envContent.replace(envRegex, newEntry);
+      envContent = envContent.replace(envRegex, `${envKey}=${address}`);
     } else {
-      // Add new entry, ensuring there's a newline before it if the file isn't empty
-      if (envContent && !envContent.endsWith("\n")) {
-        envContent += "\n";
-      }
-      envContent += newEntry + "\n";
+      // Add new entry
+      envContent += `\n${envKey}=${address}`;
     }
 
     // Write updated content back to .env
     fs.writeFileSync(envPath, envContent);
-    console.log(chalk.cyan(`\n📝 Updated ${envKey} in .env file`));
-    console.log(chalk.yellow(`New value: ${address}`));
+    console.log(chalk.cyan(`📝 Updated ${envKey} in .env`));
   }
+
+  return address;
 }
 
 main()
   .then(() => process.exit(0))
   .catch((error) => {
     console.error(error);
-    process.exit(1);
+    process.exitCode = 1;
   });
