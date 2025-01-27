@@ -1,17 +1,8 @@
 require("dotenv").config();
 const ethers = require("ethers");
-const axios = require("axios");
 const chalk = require("chalk");
 
-const POLYMER_API_URL = "https://proof.sepolia.polymer.zone";
-
 const { CHAINS } = require("../config/chains");
-
-// Debug: Log available chains
-console.log(chalk.yellow("\n📋 Available chains:"));
-for (const [key, chain] of Object.entries(CHAINS)) {
-  console.log(chalk.cyan(`>  ${key}: Chain ID ${chain.chainId}`));
-}
 
 // Contract ABI (only the events and functions we need)
 const CONTRACT_ABI =
@@ -34,19 +25,24 @@ class ChainListener {
 
   async start() {
     console.log(
-      chalk.blue(`>  Starting listener for ${chalk.bold(this.config.name)}...`)
+      chalk.blue(`[${chalk.bold(this.config.name)}] Starting listener...`)
     );
     console.log(
       chalk.cyan(
-        `>  Contract address: ${chalk.bold(this.config.contractAddress)}`
+        `[${chalk.bold(this.config.name)}] Contract address: ${chalk.bold(
+          this.config.contractAddress
+        )}`
       )
     );
-    console.log(chalk.cyan(`>  Chain ID: ${chalk.bold(this.config.chainId)}`));
 
     // Get the latest block
     const latestBlock = await this.provider.getBlockNumber();
     console.log(
-      chalk.yellow(`>  Current block number: ${chalk.bold(latestBlock)}`)
+      chalk.yellow(
+        `[${chalk.bold(this.config.name)}] Current block number: ${chalk.bold(
+          latestBlock
+        )}`
+      )
     );
 
     // Listen for FillerRepaid events
@@ -77,24 +73,39 @@ class ChainListener {
 
         console.log(
           chalk.blue(
-            `\n🔔 New Open event detected on ${chalk.bold(this.config.name)}:`
+            `\n🔔 [${chalk.bold(this.config.name)}] Event 'Open' detected`
           )
         );
         console.log(chalk.cyan(`>  Order ID: ${chalk.bold(orderId)}`));
         console.log(chalk.cyan(`>  User: ${chalk.bold(resolvedOrder.user)}`));
+
+        // Find origin chain name
+        const originChain = Object.values(CHAINS).find(
+          (chain) => chain.chainId === Number(resolvedOrder.originChainId)
+        );
+        const originChainName = originChain
+          ? originChain.name
+          : "Unknown Chain";
+
         console.log(
           chalk.cyan(
-            `>  Origin Chain ID: ${chalk.bold(resolvedOrder.originChainId)}`
+            `>  Origin Chain ID: ${chalk.bold(
+              resolvedOrder.originChainId
+            )} (${chalk.bold(originChainName)})`
           )
         );
 
         // Log the original structure of the Open event
-        console.log(chalk.blue("\n📋 Open Event Structure:"));
+        console.log(
+          chalk.blue(`\n📋 [${originChainName}] Event 'Open' Structure:`)
+        );
         console.log(chalk.cyan("ResolvedCrossChainOrder:"));
         console.log(chalk.cyan(`>  User: ${chalk.bold(resolvedOrder.user)}`));
         console.log(
           chalk.cyan(
-            `>  Origin Chain ID: ${chalk.bold(resolvedOrder.originChainId)}`
+            `>  Origin Chain ID: ${chalk.bold(
+              resolvedOrder.originChainId
+            )} (${originChainName})`
           )
         );
         console.log(
@@ -113,12 +124,20 @@ class ChainListener {
 
         // Process each fill instruction
         for (const instruction of resolvedOrder.fillInstructions) {
-          console.log(chalk.yellow(`\n📝 Processing fill instruction:`));
+          const destChain = Object.values(CHAINS).find(
+            (chain) => chain.chainId === Number(instruction.destinationChainId)
+          );
+          const destChainName = destChain ? destChain.name : "Unknown Chain";
+
+          console.log(
+            chalk.yellow(`\n📝 [${destChainName}] Processing fill instruction:`)
+          );
+
           console.log(
             chalk.cyan(
               `>  Destination Chain ID: ${chalk.bold(
                 instruction.destinationChainId
-              )}`
+              )} (${destChainName})`
             )
           );
           console.log(
@@ -128,40 +147,6 @@ class ChainListener {
               )}`
             )
           );
-
-          // Debug: Log chain lookup
-          console.log(chalk.yellow("\n🔍 Looking for destination chain:"));
-          console.log(
-            chalk.cyan(
-              `>  Searching for chain ID: ${instruction.destinationChainId}`
-            )
-          );
-          console.log(
-            chalk.cyan(
-              ">  Available chain IDs:",
-              Object.values(CHAINS).map((c) => c.chainId)
-            )
-          );
-
-          // Get the destination chain configuration
-          const destChain = Object.values(CHAINS).find(
-            (chain) => chain.chainId === Number(instruction.destinationChainId)
-          );
-
-          if (!destChain) {
-            console.log(
-              chalk.red(
-                `❌ Destination chain ${instruction.destinationChainId} not supported`
-              )
-            );
-            console.log(
-              chalk.yellow(
-                ">  Type of destinationChainId:",
-                typeof instruction.destinationChainId
-              )
-            );
-            continue;
-          }
 
           // Connect to destination chain
           const destProvider = new ethers.JsonRpcProvider(destChain.rpcUrl);
@@ -180,13 +165,8 @@ class ChainListener {
           );
 
           console.log(chalk.green(`✅ Fill transaction sent: ${fillTx.hash}`));
-          const fillReceipt = await fillTx.wait();
+          await fillTx.wait();
           console.log(chalk.green(`✅ Fill transaction confirmed!`));
-          console.log(
-            chalk.yellow(
-              `ℹ️  Skipping repayment process - will be handled later in batch`
-            )
-          );
 
           // Mark this event as processed
           this.processedOrders.add(eventId);

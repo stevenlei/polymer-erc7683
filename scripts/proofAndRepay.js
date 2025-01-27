@@ -35,18 +35,7 @@ async function main() {
   const optimismWallet = new ethers.Wallet(privateKey, optimismProvider);
 
   console.log(
-    chalk.blue(
-      `\n🌐 Connected to Base Sepolia with address: ${chalk.bold(
-        baseWallet.address
-      )}`
-    )
-  );
-  console.log(
-    chalk.blue(
-      `🌐 Connected to Optimism Sepolia with address: ${chalk.bold(
-        optimismWallet.address
-      )}`
-    )
+    chalk.blue(`\n🔑 Using wallet address: ${chalk.bold(baseWallet.address)}`)
   );
 
   // Create contract instances
@@ -63,14 +52,16 @@ async function main() {
 
   // Get transaction hash from user input
   const txHash = await question(
-    chalk.yellow("\n📝 Enter the transaction hash: ")
+    chalk.yellow(
+      "\n📝 Enter the transaction hash on destination chain (Base Sepolia): "
+    )
   );
 
   // Get transaction receipt from Base Sepolia
   const receipt = await baseProvider.getTransactionReceipt(txHash);
 
   if (!receipt) {
-    throw new Error("Transaction receipt not found on Base Sepolia");
+    throw new Error("❌ Transaction receipt not found on Base Sepolia");
   }
 
   console.log(chalk.green("\n✅ Transaction receipt found!"));
@@ -101,7 +92,7 @@ async function main() {
 
   if (proofRequest.status !== 200) {
     throw new Error(
-      `Failed to get proof from Polymer API. Status code: ${proofRequest.status}`
+      `❌ Failed to get proof from Polymer API. Status code: ${proofRequest.status}`
     );
   }
 
@@ -119,7 +110,7 @@ async function main() {
 
   while (!proofResponse?.data?.result?.proof) {
     if (attempts >= maxAttempts) {
-      throw new Error("Failed to get proof after multiple attempts");
+      throw new Error("❌ Failed to get proof after multiple attempts");
     }
 
     await new Promise((resolve) =>
@@ -156,7 +147,12 @@ async function main() {
   const proofInBytes = `0x${Buffer.from(proof, "base64").toString("hex")}`;
 
   // Call repayFillers with the proof on Optimism Sepolia
-  console.log(chalk.yellow("\n💰 Calling repayFillers with the proof..."));
+  console.log(
+    chalk.yellow(
+      "\n💰 Calling repayFillers with the proof on Optimism Sepolia..."
+    )
+  );
+
   try {
     const tx = await optimismContract.repayFillers(proofInBytes);
     console.log(chalk.cyan("Transaction hash:", tx.hash));
