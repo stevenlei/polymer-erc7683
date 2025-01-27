@@ -1,96 +1,121 @@
 # Cross-Chain Counter with ERC7683 and Polymer
 
-This project demonstrates a practical implementation of the ERC7683 cross-chain intents standard with a filler powered by Polymer's Prove API. It features a simple cross-chain counter contract that can be incremented across different chains, showcasing the power of cross-chain communication.
+This repository demonstrates a cross-chain counter implementation using [ERC-7683](https://eips.ethereum.org/EIPS/eip-7683) and [Polymer's Prove API](https://polymerlabs.org/). It showcases how to handle cross-chain message passing with filler repayments.
 
 ## Overview
 
-The project consists of two main components:
+The system consists of a counter contract deployed on two chains (e.g., Optimism Sepolia and Base Sepolia). When the counter `incrementCrossChain()` function is called on one chain, it triggers a cross-chain message to increment the counter on the other chain. Fillers can help relay these messages, and they will be repaid for their service.
 
-1. **CrossChainCounter Contract**: A smart contract implementing the ERC7683 standard that maintains a counter which can be incremented across different chains.
+## Workflow
 
-2. **Polymer Relayer**: An automated relayer service that uses Polymer's Prove API to handle cross-chain message verification and execution.
+1. **Deploy Contracts**
 
-## How It Works
+   ```bash
+   npm run deploy
+   ```
 
-1. A user opens a cross-chain order (intent) on the origin chain (e.g., Optimism Sepolia)
-2. The relayer (filler) monitors for new cross-chain orders
-3. Using Polymer's Prove API, the filler validates and generates the required proof data
-4. The order is filled on the destination chain (e.g., Base Sepolia) by executing the counter increment
+   - Deploys the `CrossChainCounter` contract on both chains
 
-## Quick Start
+2. **Relayer Setup**
 
-1. Install dependencies:
+   ```bash
+   npm run relayer
+   ```
 
-```bash
-npm install
-```
+   - Sets up the relayer (filler) and listens for the `Open` event, to fill the order on the destination chain.
 
-2. Configure environment:
+3. **Cross-Chain Increment**
 
-```bash
-cp .env.example .env
-# Edit .env with your private keys and RPC endpoints
-```
+   ```bash
+   npm run increment
+   ```
 
-3. Deploy contracts:
+   - Emits a cross-chain increment event
+   - When fillers help relay this message on the destination chain, the repayment is queued on the destination chain.
 
-```bash
-# Deploy to Optimism Sepolia
-npm run deploy:optimism
+4. **Execute Batch Repayments**
 
-# Deploy to Base Sepolia
-npm run deploy:base
-```
+   ```bash
+   npm run repayment
+   ```
 
-4. Run the relayer:
+   - Executes all pending (queued) repayments on the destination chain in a single transaction
+   - Emits `RepaymentExecuted` events for each filler that helped relay messages
+   - Returns a transaction hash that will be used for proving these events back on the source chain
 
-```bash
-npm run relayer
-```
+5. **Prove and Process Repayments**
+   ```bash
+   npm run proof
+   ```
+   - Uses the transaction hash from step 3 to request a proof from Polymer's Prove API
+   - Submits this proof to the `repayFillers` function on the source chain
+   - The contract extracts all `RepaymentExecuted` events from the proof
+   - For each event, simulates the repayment by emitting a `FillerRepaid` event on the source chain
 
-5. Start the demo:
+## Contract Details
 
-```bash
-npm run start
-```
+The main contract `CrossChainCounter.sol` implements:
 
-6. Check the counter values across chains:
+- Cross-chain message passing using ERC-7683
+- Queue system for filler repayments
+- Batch execution of repayments
+- Proof verification and event extraction for cross-chain repayments
 
-```bash
-npm run check
-```
+## Setup
 
-## Contract Architecture
+1. Clone the repository
+2. Install dependencies:
+   ```bash
+   npm install
+   ```
+3. Copy `.env.example` to `.env` and fill in your values:
+   ```bash
+   cp .env.example .env
+   ```
 
-The `CrossChainCounter` contract implements two key ERC7683 interfaces:
+## Configuration
 
-- `IERC7683OriginSettler`: Handles the initiation of cross-chain messages
-- `IERC7683DestinationSettler`: Processes incoming cross-chain messages
+The `.env` file should contain:
 
-## Scripts
+- Contract addresses for both chains
+- RPC endpoints
+- Private key for transactions
+- Polymer configuration
 
-- `deploy.js`: Deploys the CrossChainCounter contract
-- `relayer.js`: Runs the Polymer-powered relayer service
-- `erc7683.js`: Demo script showing cross-chain counter increments
-- `check-counters.js`: Utility to check counter values across chains
+## Development
 
-## Networks
+1. Deploy contracts:
 
-Currently supported networks:
+   ```bash
+   npm run deploy
+   ```
 
-- Optimism Sepolia
-- Base Sepolia
+2. Run the relayer:
 
-## Environment Variables
+   ```bash
+   npm run relayer
+   ```
 
-Required environment variables:
+3. Run the full workflow:
 
-```
-PRIVATE_KEY=your_private_key
-OPTIMISM_SEPOLIA_RPC=optimism_rpc_url
-BASE_SEPOLIA_RPC=base_rpc_url
-POLYMER_API_KEY=your_polymer_api_key
-```
+   ```bash
+   # 1. Increment counter (triggers cross-chain message)
+   npm run increment
+
+   # 2. Execute pending repayments on destination chain
+   npm run repayment
+
+   # 3. Prove and process repayments on source chain
+   npm run proof
+   ```
+
+## Gas Optimization
+
+The system is optimized for gas usage by:
+
+- Batching multiple repayments in a single transaction
+- Using efficient event extraction from proofs
+- Minimizing storage operations
 
 ## Resources
 

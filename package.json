@@ -6,6 +6,7 @@
     "compile": "hardhat compile",
     "deploy:optimism": "hardhat run scripts/deploy.js --network optimismSepolia",
     "deploy:base": "hardhat run scripts/deploy.js --network baseSepolia",
+    "deploy": "hardhat run scripts/deploy.js --network optimismSepolia && hardhat run scripts/deploy.js --network baseSepolia",
     "relayer": "node scripts/relayer.js",
     "increment": "hardhat run scripts/erc7683.js --network optimismSepolia",
     "check": "hardhat run scripts/check-counters.js",
