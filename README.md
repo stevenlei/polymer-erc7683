@@ -33,7 +33,15 @@ The system consists of a counter contract deployed on two chains (e.g., Optimism
    - Emits a cross-chain increment event
    - When fillers help relay this message on the destination chain, the repayment is queued on the destination chain.
 
-4. **Execute Batch Repayments**
+4. **Check counter value across chains**
+
+   ```bash
+   npm run check
+   ```
+
+   - Checks the counter value on both chains and prints the result
+
+5. **Execute Batch Repayments**
 
    ```bash
    npm run repayment
@@ -43,7 +51,7 @@ The system consists of a counter contract deployed on two chains (e.g., Optimism
    - Emits `RepaymentExecuted` events for each filler that helped relay messages
    - Returns a transaction hash that will be used for proving these events back on the source chain
 
-5. **Prove and Process Repayments**
+6. **Prove and Process Repayments**
    ```bash
    npm run proof
    ```
@@ -102,10 +110,13 @@ The `.env` file should contain:
    # 1. Increment counter (triggers cross-chain message)
    npm run increment
 
-   # 2. Execute pending repayments on destination chain
+   # 2. Check counter value across chains
+   npm run check
+
+   # 3. Execute pending repayments on destination chain
    npm run repayment
 
-   # 3. Prove and process repayments on source chain
+   # 4. Prove and process repayments on source chain
    npm run proof
    ```
 
