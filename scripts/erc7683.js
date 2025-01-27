@@ -32,10 +32,6 @@ async function main() {
   );
   const counter = await CrossChainCounter.attach(contractAddress);
 
-  // Get current counter value
-  const currentValue = await counter.counter();
-  console.log(chalk.blue(`\n📊 Current counter value: ${currentValue}`));
-
   // Get destination chain and settler based on current chain
   let destinationChainId, destinationSettler;
 
@@ -78,7 +74,9 @@ async function main() {
     console.log(chalk.cyan(`📝 Transaction hash: ${chalk.bold(tx.hash)}`));
   }
 
-  console.log(chalk.green("\n✅ All cross-chain increments initiated successfully!"));
+  console.log(
+    chalk.green("\n✅ All cross-chain increments initiated successfully!")
+  );
 }
 
 main()

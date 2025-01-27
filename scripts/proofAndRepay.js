@@ -38,12 +38,7 @@ async function main() {
     chalk.blue(`\n🔑 Using wallet address: ${chalk.bold(baseWallet.address)}`)
   );
 
-  // Create contract instances
-  const baseContract = new ethers.Contract(
-    process.env.BASE_SEPOLIA_CONTRACT_ADDRESS,
-    CONTRACT_ABI,
-    baseWallet
-  );
+  // Create contract instance
   const optimismContract = new ethers.Contract(
     process.env.OPTIMISM_SEPOLIA_CONTRACT_ADDRESS,
     CONTRACT_ABI,
@@ -155,10 +150,42 @@ async function main() {
 
   try {
     const tx = await optimismContract.repayFillers(proofInBytes);
-    console.log(chalk.cyan("Transaction hash:", tx.hash));
 
-    console.log(chalk.yellow("\nWaiting for transaction confirmation..."));
     const receipt = await tx.wait();
+
+    // Calculate gas costs
+    const gasUsed = BigInt(receipt.gasUsed);
+    const gasLimit = BigInt(tx.gasLimit);
+    const gasPrice = BigInt(receipt.gasPrice);
+
+    const totalCost = gasUsed * gasPrice;
+    const gasPriceInEth = ethers.formatEther(gasPrice.toString());
+    const totalCostInEth = ethers.formatEther(totalCost.toString());
+
+    // Calculate gas usage percentage against limit
+    const gasPercentage = Number((gasUsed * 10000n) / gasLimit) / 100; // For 2 decimal places
+
+    // Create a table for gas breakdown
+    console.log(chalk.blue("\n📊 Transaction Details:"));
+
+    console.log(chalk.cyan("\nTransaction Fee:"));
+    console.log(`>  ${chalk.bold(totalCostInEth)} ETH`);
+
+    console.log(chalk.cyan("\nGas Price:"));
+    console.log(`>  ${chalk.bold(gasPriceInEth)} ETH`);
+    console.log(`>  (${chalk.bold((Number(gasPrice) / 1e9).toFixed(9))} Gwei)`);
+
+    console.log(chalk.cyan("\nGas Usage & Limit:"));
+    console.log(
+      `>  ${gasUsed.toLocaleString()} / ${gasLimit.toLocaleString()} (${gasPercentage.toFixed(
+        2
+      )}%)`
+    );
+
+    // Add block and status info
+    console.log(chalk.cyan("\nBlock Info:"));
+    console.log(`>  Block Number: ${chalk.bold(receipt.blockNumber)}`);
+    console.log(`>  Transaction Hash: ${chalk.bold(receipt.hash)}`);
 
     console.log(chalk.green("\n✅ Transaction confirmed!"));
 
