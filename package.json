@@ -8,7 +8,9 @@
     "deploy:base": "hardhat run scripts/deploy.js --network baseSepolia",
     "relayer": "node scripts/relayer.js",
     "start": "hardhat run scripts/erc7683.js --network optimismSepolia",
-    "check": "hardhat run scripts/check-counters.js"
+    "check": "hardhat run scripts/check-counters.js",
+    "repayment": "hardhat run scripts/executeRepayments.js --network baseSepolia",
+    "proof": "node scripts/proofAndRepay.js"
   },
   "keywords": [],
   "author": "",

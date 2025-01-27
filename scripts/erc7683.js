@@ -36,19 +36,6 @@ async function main() {
   const currentValue = await counter.counter();
   console.log(chalk.blue(`\n📊 Current counter value: ${currentValue}`));
 
-  // Increment counter locally
-  console.log(chalk.yellow("\n🔄 Incrementing counter locally..."));
-  const tx = await counter.increment();
-  await tx.wait();
-  console.log(chalk.green("✅ Counter incremented locally!"));
-
-  // Get new counter value
-  const newValue = await counter.counter();
-  console.log(chalk.blue(`📊 New counter value: ${newValue}`));
-
-  // Initiate cross-chain increment to Base Sepolia
-  console.log(chalk.yellow("\n🌉 Initiating cross-chain increment..."));
-
   // Get destination chain and settler based on current chain
   let destinationChainId, destinationSettler;
 
@@ -76,20 +63,22 @@ async function main() {
 
   const fillDeadline = Math.floor(Date.now() / 1000) + 3600; // 1 hour from now
 
-  const tx2 = await counter.incrementCrossChain(
-    destinationChainId,
-    destinationSettlerBytes32,
-    fillDeadline
-  );
-  await tx2.wait();
-  console.log(chalk.green("✅ Cross-chain increment initiated!"));
-  console.log(chalk.cyan(`📝 Transaction hash: ${chalk.bold(tx2.hash)}`));
-  console.log(
-    chalk.yellow(
-      "\n⏳ Waiting for the relayer to process the increment on the destination chain..."
-    )
-  );
-  console.log(chalk.yellow("Note: Make sure the relayer is running!"));
+  // Initiate 3 cross-chain increments
+  console.log(chalk.yellow("\n🔄 Initiating 3 cross-chain increments..."));
+
+  for (let i = 0; i < 3; i++) {
+    console.log(chalk.yellow(`\n📝 Increment #${i + 1}`));
+    const tx = await counter.incrementCrossChain(
+      BigInt(destinationChainId), // uint64
+      destinationSettlerBytes32, // bytes32
+      fillDeadline // uint32
+    );
+    await tx.wait();
+    console.log(chalk.green(`✅ Cross-chain increment #${i + 1} initiated!`));
+    console.log(chalk.cyan(`📝 Transaction hash: ${chalk.bold(tx.hash)}`));
+  }
+
+  console.log(chalk.green("\n✅ All cross-chain increments initiated successfully!"));
 }
 
 main()

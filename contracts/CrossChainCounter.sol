@@ -1,90 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-interface IERC7683OriginSettler {
-    struct GaslessCrossChainOrder {
-        address originSettler;
-        address user;
-        uint256 nonce;
-        uint256 originChainId;
-        uint32 openDeadline;
-        uint32 fillDeadline;
-        bytes32 orderDataType;
-        bytes orderData;
-    }
+import "./interface/IERC7683OriginSettler.sol";
+import "./interface/IERC7683DestinationSettler.sol";
+import "./interface/IPolymerProver.sol";
 
-    struct OnchainCrossChainOrder {
-        uint32 fillDeadline;
-        bytes32 orderDataType;
-        bytes orderData;
-    }
-
-    struct ResolvedCrossChainOrder {
-        address user;
-        uint256 originChainId;
-        uint32 openDeadline;
-        uint32 fillDeadline;
-        bytes32 orderId;
-        Output[] maxSpent;
-        Output[] minReceived;
-        FillInstruction[] fillInstructions;
-    }
-
-    struct Output {
-        bytes32 token;
-        uint256 amount;
-        bytes32 recipient;
-        uint256 chainId;
-    }
-
-    struct FillInstruction {
-        uint64 destinationChainId;
-        bytes32 destinationSettler;
-        bytes originData;
-    }
-
-    event Open(bytes32 indexed orderId, ResolvedCrossChainOrder resolvedOrder);
-
-    function openFor(
-        GaslessCrossChainOrder calldata order,
-        bytes calldata signature,
-        bytes calldata originFillerData
-    ) external;
-
-    function open(OnchainCrossChainOrder calldata order) external;
-
-    function resolveFor(
-        GaslessCrossChainOrder calldata order,
-        bytes calldata originFillerData
-    ) external view returns (ResolvedCrossChainOrder memory);
-
-    function resolve(
-        OnchainCrossChainOrder calldata order
-    ) external view returns (ResolvedCrossChainOrder memory);
-}
-
-interface IERC7683DestinationSettler {
-    function fill(
-        bytes32 orderId,
-        bytes calldata originData,
-        bytes calldata fillerData
-    ) external;
-}
-
-interface IPolymerProver {
-    function validateEvent(
-        uint256 logIndex,
-        bytes calldata proof
-    )
-        external
-        view
-        returns (
-            string memory chainId,
-            address emittingContract,
-            bytes[] memory topics,
-            bytes memory data
-        );
-}
+import "./library/RLPReader.sol";
+import "./library/RLPParser.sol";
 
 // Counter Message subtype definition
 struct CounterMessage {
@@ -95,17 +17,32 @@ contract CrossChainCounter is
     IERC7683OriginSettler,
     IERC7683DestinationSettler
 {
-    uint256 public counter;
-    mapping(bytes32 => bool) public processedOrders;
-    mapping(bytes32 => bool) public paidOrders; // Track orders that have been paid
-    bytes32 public constant ORDER_TYPE_HASH =
-        keccak256("CounterMessage(uint256 incrementAmount)");
+    using RLPParser for bytes;
+    using RLPParser for RLPReader.RLPItem[];
 
     IPolymerProver public immutable polymerProver;
 
-    event CounterIncremented(uint256 newValue, uint256 originChainId);
-    event CrossChainIncrementInitiated(bytes32 orderId);
+    // Structure to store pending repayments
+    struct PendingRepayment {
+        bytes32 orderId;
+        address filler;
+        bool processed;
+    }
+
+    uint256 public counter;
+
+    mapping(bytes32 => bool) public processedOrders;
+    mapping(bytes32 => bool) public paidOrders;
+    mapping(bytes32 => bool) public isQueued;
+
+    // Array to store pending repayments
+    PendingRepayment[] public pendingRepayments;
+
+    bytes32 public constant ORDER_TYPE_HASH =
+        keccak256("CounterMessage(uint256 incrementAmount)");
+
     event FillerRepaid(bytes32 orderId, address filler);
+    event RepaymentExecuted(bytes32 indexed orderId, address indexed filler);
 
     constructor(address _polymerProver) {
         counter = 0;
@@ -115,7 +52,6 @@ contract CrossChainCounter is
     // Function to increment counter locally
     function increment() external {
         counter += 1;
-        emit CounterIncremented(counter, block.chainid);
     }
 
     // Function to initiate cross-chain increment
@@ -146,7 +82,10 @@ contract CrossChainCounter is
             originData: orderData
         });
 
-        bytes32 orderId = keccak256(abi.encode(order));
+        // Add uniqueness to orderId by including block.timestamp and msg.sender
+        bytes32 orderId = keccak256(
+            abi.encode(order, block.timestamp, msg.sender)
+        );
 
         ResolvedCrossChainOrder memory resolvedOrder = ResolvedCrossChainOrder({
             user: msg.sender,
@@ -161,7 +100,70 @@ contract CrossChainCounter is
 
         // Emit the Open event
         emit Open(orderId, resolvedOrder);
-        emit CrossChainIncrementInitiated(orderId);
+    }
+
+    // Queue a repayment for batch processing
+    function queueRepayment(bytes32 orderId, address filler) internal {
+        require(!isQueued[orderId], "Repayment already queued");
+        require(!paidOrders[orderId], "Order already paid");
+
+        pendingRepayments.push(
+            PendingRepayment({
+                orderId: orderId,
+                filler: filler,
+                processed: false
+            })
+        );
+
+        isQueued[orderId] = true;
+    }
+
+    // Execute all pending repayments
+    function executeRepayments() external {
+        for (uint256 i = 0; i < pendingRepayments.length; i++) {
+            PendingRepayment storage repayment = pendingRepayments[i];
+            if (!repayment.processed) {
+                repayment.processed = true;
+
+                // We will emit all pending RepaymentExecuted events into a single transaction receipt
+                // So that we can validate all events in the receipt using Polymer prover on the origin chain
+                emit RepaymentExecuted(repayment.orderId, repayment.filler);
+            }
+        }
+    }
+
+    // Process multiple repayments on origin chain
+    function repayFillers(bytes calldata proof) external {
+        // Validate the receipt containing multiple RepaymentExecuted events
+        (, bytes memory rlpEncodedBytes) = polymerProver.validateReceipt(proof);
+
+        // Parse the receipt to get logs array
+        RLPReader.RLPItem[] memory logs = RLPParser.parseReceipt(
+            rlpEncodedBytes
+        );
+
+        // Event signature for RepaymentExecuted
+        bytes32 REPAYMENT_EXECUTED_SIG = keccak256(
+            "RepaymentExecuted(bytes32,address)"
+        );
+
+        // Process each log
+        for (uint256 i = 0; i < logs.length; i++) {
+            // Parse the log structure: [address, topics[], data]
+            RLPReader.RLPItem[] memory logItems = RLPReader.readList(logs[i]);
+
+            // Parse the log to get topics and data
+            (bytes[] memory topics, ) = RLPParser.parseLog(
+                logItems,
+                REPAYMENT_EXECUTED_SIG
+            );
+
+            // Extract orderId and filler from topics
+            bytes32 orderId = bytes32(topics[1]);
+            address filler = address(uint160(uint256(bytes32(topics[2]))));
+
+            emit FillerRepaid(orderId, filler);
+        }
     }
 
     // Implementation of IERC7683DestinationSettler
@@ -180,7 +182,9 @@ contract CrossChainCounter is
 
         processedOrders[orderId] = true;
         counter += message.incrementAmount;
-        emit CounterIncremented(counter, block.chainid);
+
+        // Queue the repayment automatically when fill is called
+        queueRepayment(orderId, msg.sender);
     }
 
     // Implementation of IERC7683OriginSettler
@@ -210,36 +214,5 @@ contract CrossChainCounter is
         OnchainCrossChainOrder calldata /* order */
     ) external pure override returns (ResolvedCrossChainOrder memory) {
         revert("Not implemented");
-    }
-
-    // Function to repay the filler after successful cross-chain execution
-    function repayFiller(
-        bytes32 orderId,
-        address filler,
-        uint256 logIndex,
-        bytes calldata proof
-    ) external {
-        require(!paidOrders[orderId], "Order already paid");
-
-        // Verify the fill proof using Polymer prover
-        (
-            string memory chainId,
-            address emittingContract,
-            bytes[] memory topics,
-            bytes memory data
-        ) = polymerProver.validateEvent(logIndex, proof);
-
-        // Verify this is a fill event for our orderId from the correct contract
-        require(
-            bytes32(topics[0]) ==
-                keccak256("CounterIncremented(uint256,uint256)"),
-            "Invalid event topic"
-        );
-
-        // Mark order as paid before emitting event (prevent reentrancy)
-        paidOrders[orderId] = true;
-
-        // Emit event to indicate filler has been "repaid"
-        emit FillerRepaid(orderId, filler);
     }
 }
