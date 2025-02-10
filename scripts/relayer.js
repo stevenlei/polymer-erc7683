@@ -23,48 +23,43 @@ const CONTRACT_ABI = [
   "event RepaymentBatchExecuted(bytes32 indexed batchHash, uint256 indexed startIndex, uint256 indexed endIndex)",
 ];
 
+// Create a shared event tracker across all chains
+const sharedEventTracker = new Set();
+
+// Create a mapping of chain listeners for cross-chain operations
+let chainListeners = {};
+
 class ChainListener {
-  constructor(chainConfig, wallet) {
-    this.config = chainConfig;
-    this.provider = new ethers.JsonRpcProvider(chainConfig.rpcUrl);
-    this.wallet = wallet.connect(this.provider);
+  constructor(config) {
+    this.config = config;
+    this.provider = new ethers.JsonRpcProvider(config.rpcUrl);
+    this.wallet = new ethers.Wallet(process.env.PRIVATE_KEY, this.provider);
     this.contract = new ethers.Contract(
-      chainConfig.contractAddress,
+      config.contractAddress,
       CONTRACT_ABI,
       this.wallet
     );
 
-    // Keep track of processed orders to avoid duplicates
+    // Store this listener in the global mapping
+    chainListeners[config.chainId] = this;
+
+    // Track processed orders per chain
     this.processedOrders = new Set();
   }
 
   async start() {
     console.log(
-      chalk.blue(`[${chalk.bold(this.config.name)}] Starting listener...`)
-    );
-    console.log(
-      chalk.cyan(
-        `[${chalk.bold(this.config.name)}] Contract address: ${chalk.bold(
-          this.config.contractAddress
-        )}`
-      )
+      chalk.blue(`\n🚀 Starting relayer for ${chalk.bold(this.config.name)}...`)
     );
 
-    // Get the latest block
-    const latestBlock = await this.provider.getBlockNumber();
-    console.log(
-      chalk.yellow(
-        `[${chalk.bold(this.config.name)}] Current block number: ${chalk.bold(
-          latestBlock
-        )}`
-      )
-    );
+    // Keep track of the last nonce used
+    this.lastNonce = await this.wallet.getNonce();
 
     // Listen for FillerRepaidBatch events
     this.contract.on("FillerRepaidBatch", async (orderIds, fillers, event) => {
       console.log(chalk.cyan("\n📦 Batch repayment detected!"));
-      console.log(chalk.cyan(`Transaction Hash: ${event.transactionHash}`));
-      console.log(chalk.cyan(`Block Number: ${event.blockNumber}`));
+      console.log(chalk.cyan(`Transaction Hash: ${event.log.transactionHash}`));
+      console.log(chalk.cyan(`Block Number: ${event.log.blockNumber}`));
 
       console.log(chalk.cyan("\nRepayments in batch:"));
       for (let i = 0; i < orderIds.length; i++) {
@@ -81,116 +76,149 @@ class ChainListener {
     // Listen for Open events from the Origin Settler
     this.contract.on("Open", async (orderId, resolvedOrder, event) => {
       try {
-        // Create a unique event identifier
-        const eventId = `${event.log.blockHash}-${event.log.transactionHash}-${event.log.index}`;
+        console.log(chalk.cyan("\nEvent Details:"));
+        console.log(
+          chalk.cyan(">  Transaction Hash:", event.log.transactionHash)
+        );
+        console.log(chalk.cyan(">  Block Number:", event.log.blockNumber));
+        console.log(chalk.cyan(">  Log Index:", event.log.index));
+        console.log(chalk.cyan(">  Order ID:", orderId));
 
-        // Skip if we've already processed this event
+        // Convert BigInt to string in resolvedOrder for logging
+        const resolvedOrderForLog = JSON.parse(
+          JSON.stringify(resolvedOrder, (_, value) =>
+            typeof value === "bigint" ? value.toString() : value
+          )
+        );
+
+        // Create unique event identifier using all available data
+        const eventId = `${event.log.transactionHash}-${event.log.blockNumber}-${event.log.index}`;
+
+        // Skip if we've already processed this exact event
         if (this.processedOrders.has(eventId)) {
+          console.log(
+            chalk.yellow(
+              `\n⚠️ Event ${eventId} already processed on ${this.config.name}, skipping...`
+            )
+          );
           return;
         }
 
+        // Mark this event as processed immediately to prevent duplicates
+        this.processedOrders.add(eventId);
+
         console.log(
-          chalk.blue(
-            `\n🔔 [${chalk.bold(this.config.name)}] Event 'Open' detected`
-          )
+          chalk.yellow(`\n📝 New order detected on ${this.config.name}:`)
         );
         console.log(chalk.cyan(`>  Order ID: ${chalk.bold(orderId)}`));
-        console.log(chalk.cyan(`>  User: ${chalk.bold(resolvedOrder.user)}`));
-
-        // Find origin chain name
-        const originChain = Object.values(CHAINS).find(
-          (chain) => chain.chainId === Number(resolvedOrder.originChainId)
-        );
-        const originChainName = originChain
-          ? originChain.name
-          : "Unknown Chain";
-
+        console.log(chalk.cyan(`>  Event ID: ${chalk.bold(eventId)}`));
         console.log(
           chalk.cyan(
-            `>  Origin Chain ID: ${chalk.bold(
-              resolvedOrder.originChainId
-            )} (${chalk.bold(originChainName)})`
+            `>  Source Chain: ${chalk.bold(this.config.name)} (${
+              this.config.chainId
+            })`
           )
         );
 
-        // Log the original structure of the Open event
-        console.log(
-          chalk.blue(`\n📋 [${originChainName}] Event 'Open' Structure:`)
-        );
-        console.log(chalk.cyan("ResolvedCrossChainOrder:"));
-        console.log(chalk.cyan(`>  User: ${chalk.bold(resolvedOrder.user)}`));
-        console.log(
-          chalk.cyan(
-            `>  Origin Chain ID: ${chalk.bold(
-              resolvedOrder.originChainId
-            )} (${originChainName})`
-          )
-        );
-        console.log(
-          chalk.cyan(
-            `>  Open Deadline: ${chalk.bold(resolvedOrder.openDeadline)}`
-          )
-        );
-        console.log(
-          chalk.cyan(
-            `>  Fill Deadline: ${chalk.bold(resolvedOrder.fillDeadline)}`
-          )
-        );
-        console.log(
-          chalk.cyan(`>  Order ID: ${chalk.bold(resolvedOrder.orderId)}`)
-        );
+        // Extract fill instructions from the resolved order
+        const fillInstructions = resolvedOrder.fillInstructions;
+
+        if (!fillInstructions || fillInstructions.length === 0) {
+          console.log(chalk.yellow("⚠️ No fill instructions found in order"));
+          return;
+        }
 
         // Process each fill instruction
-        for (const instruction of resolvedOrder.fillInstructions) {
-          const destChain = Object.values(CHAINS).find(
-            (chain) => chain.chainId === Number(instruction.destinationChainId)
-          );
-          const destChainName = destChain ? destChain.name : "Unknown Chain";
+        for (const instruction of fillInstructions) {
+          const destinationChainId = Number(instruction.destinationChainId);
+          const destinationSettler = `0x${instruction.destinationSettler.slice(
+            26
+          )}`;
 
-          console.log(
-            chalk.yellow(`\n📝 [${destChainName}] Processing fill instruction:`)
-          );
+          // Get the destination chain listener
+          const destinationListener = chainListeners[destinationChainId];
 
-          console.log(
-            chalk.cyan(
-              `>  Destination Chain ID: ${chalk.bold(
-                instruction.destinationChainId
-              )} (${destChainName})`
-            )
-          );
-          console.log(
-            chalk.cyan(
-              `>  Destination Settler: ${chalk.bold(
-                instruction.destinationSettler
-              )}`
-            )
-          );
+          if (!destinationListener) {
+            console.log(
+              chalk.red(
+                `❌ No listener found for destination chain ${destinationChainId}`
+              )
+            );
+            continue;
+          }
 
-          // Connect to destination chain
-          const destProvider = new ethers.JsonRpcProvider(destChain.rpcUrl);
-          const destWallet = this.wallet.connect(destProvider);
-          const destContract = new ethers.Contract(
-            destChain.contractAddress,
-            CONTRACT_ABI,
-            destWallet
-          );
+          try {
+            // Get the next nonce for the destination chain
+            const nonce = destinationListener.lastNonce++;
 
-          // Fill the order on the destination chain
-          const fillTx = await destContract.fill(
-            orderId,
-            instruction.originData,
-            "0x" // Empty filler data
-          );
+            // Generate a unique orderId for this fill using event details
+            const uniqueOrderId = ethers.keccak256(
+              ethers.AbiCoder.defaultAbiCoder().encode(
+                ["bytes32", "bytes32", "uint256", "uint256"],
+                [
+                  orderId,
+                  event.log.transactionHash,
+                  event.log.blockNumber,
+                  BigInt(event.log.index || 0),
+                ]
+              )
+            );
 
-          console.log(chalk.green(`✅ Fill transaction sent: ${fillTx.hash}`));
-          await fillTx.wait();
-          console.log(chalk.green(`✅ Fill transaction confirmed!`));
+            console.log(chalk.blue("\nExecuting fill on destination chain:"));
+            console.log(
+              chalk.cyan(`>  Chain: ${destinationListener.config.name}`)
+            );
+            console.log(chalk.cyan(`>  Original Order ID: ${orderId}`));
+            console.log(chalk.cyan(`>  Unique Order ID: ${uniqueOrderId}`));
+            console.log(chalk.cyan(`>  Event ID: ${eventId}`));
+            console.log(chalk.cyan(`>  Nonce: ${nonce}`));
 
-          // Mark this event as processed
-          this.processedOrders.add(eventId);
+            // Call fill with the unique orderId
+            const tx = await destinationListener.contract.fill(
+              uniqueOrderId,
+              instruction.originData,
+              "0x",
+              { nonce }
+            );
+
+            console.log(
+              chalk.green(
+                `📤 Fill transaction sent on ${
+                  destinationListener.config.name
+                }: ${chalk.bold(tx.hash)}`
+              )
+            );
+
+            // Wait for transaction confirmation
+            const receipt = await tx.wait();
+
+            // Check if transaction was successful
+            if (receipt.status === 0) {
+              throw new Error("Transaction failed");
+            }
+
+            console.log(
+              chalk.green(
+                `✅ Fill transaction confirmed on ${
+                  destinationListener.config.name
+                }: ${chalk.bold(tx.hash)}`
+              )
+            );
+
+            // Mark this fill instruction as processed only if successful
+            sharedEventTracker.add(eventId);
+          } catch (error) {
+            console.log(
+              chalk.red(`❌ Error processing fill: ${error.message}`)
+            );
+            // Reset nonce on error
+            destinationListener.lastNonce =
+              await destinationListener.wallet.getNonce();
+            throw error;
+          }
         }
       } catch (error) {
-        console.error(chalk.red("❌ Error processing event:"), error);
+        console.log(chalk.red(`❌ Error processing event: ${error.message}`));
       }
     });
   }
@@ -206,7 +234,7 @@ async function main() {
   // Create listeners for each chain
   const listeners = [];
   for (const chain of Object.values(CHAINS)) {
-    listeners.push(new ChainListener(chain, wallet));
+    listeners.push(new ChainListener(chain));
   }
 
   // Start all listeners

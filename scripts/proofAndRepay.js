@@ -298,17 +298,6 @@ async function main() {
         continue;
       }
     }
-
-    if (fillerRepaidEvents.length > 0) {
-      console.log(chalk.green("\n📋 Repayment Events:"));
-      fillerRepaidEvents.forEach((event, index) => {
-        console.log(chalk.cyan(`\nRepayment ${index + 1}:`));
-        console.log(chalk.cyan(`  Order ID: ${event.orderId}`));
-        console.log(chalk.cyan(`  Filler: ${event.filler}`));
-      });
-    } else {
-      console.log(chalk.yellow("\n⚠️ No repayment events found"));
-    }
   } catch (error) {
     console.error(chalk.red("\n❌ Error:"), error);
   }

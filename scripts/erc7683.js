@@ -2,6 +2,16 @@ require("dotenv").config();
 const hre = require("hardhat");
 const { ethers } = require("hardhat");
 const chalk = require("chalk");
+const readline = require("readline");
+
+// Create readline interface
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout
+});
+
+// Promisify readline question
+const question = (query) => new Promise((resolve) => rl.question(query, resolve));
 
 async function main() {
   const networkName = hre.network.name;
@@ -24,6 +34,35 @@ async function main() {
 
   console.log(
     chalk.blue(`📄 Using contract address: ${chalk.bold(contractAddress)}`)
+  );
+
+  // Prompt user for number of transactions
+  const answer = await question(chalk.yellow("\n💭 How many transactions would you like to send? (default: 3) "));
+  const numTx = answer ? parseInt(answer) : 3;
+
+  if (isNaN(numTx) || numTx < 1) {
+    console.log(
+      chalk.red("❌ Please provide a valid number of transactions (>= 1)")
+    );
+    rl.close();
+    process.exit(1);
+  }
+
+  // Ask for confirmation
+  const confirmation = await question(
+    chalk.yellow(`\n⚠️  You are about to send ${numTx} transaction${numTx > 1 ? "s" : ""}. Proceed? (y/N) `)
+  );
+
+  if (confirmation.toLowerCase() !== 'y') {
+    console.log(chalk.yellow("\n🛑 Operation cancelled by user"));
+    rl.close();
+    process.exit(0);
+  }
+
+  console.log(
+    chalk.blue(
+      `\n🚀 Preparing to send ${numTx} transaction${numTx > 1 ? "s" : ""}...`
+    )
   );
 
   // Get contract instance
@@ -59,29 +98,52 @@ async function main() {
 
   const fillDeadline = Math.floor(Date.now() / 1000) + 3600; // 1 hour from now
 
-  // Initiate 3 cross-chain increments
-  console.log(chalk.yellow("\n🔄 Initiating 3 cross-chain increments..."));
+  // Initiate cross-chain increments in parallel
+  console.log(
+    chalk.yellow("\n🔄 Initiating cross-chain increments in parallel...")
+  );
 
-  for (let i = 0; i < 3; i++) {
-    console.log(chalk.yellow(`\n📝 Increment #${i + 1}`));
-    const tx = await counter.incrementCrossChain(
-      BigInt(destinationChainId), // uint64
-      destinationSettlerBytes32, // bytes32
-      fillDeadline // uint32
-    );
-    await tx.wait();
-    console.log(chalk.green(`✅ Cross-chain increment #${i + 1} initiated!`));
-    console.log(chalk.cyan(`📝 Transaction hash: ${chalk.bold(tx.hash)}`));
-  }
+  const incrementPromises = Array(numTx)
+    .fill()
+    .map(async (_, i) => {
+      console.log(chalk.yellow(`\n📝 Preparing increment #${i + 1}`));
+
+      // Get nonce for this transaction
+      const wallet = await ethers.provider.getSigner();
+      const currentNonce = await wallet.getNonce();
+
+      const tx = await counter.incrementCrossChain(
+        BigInt(destinationChainId), // uint64
+        destinationSettlerBytes32, // bytes32
+        fillDeadline, // uint32
+        { nonce: currentNonce + i } // Explicitly set nonce
+      );
+
+      return { tx, index: i + 1 };
+    });
+
+  // Wait for all transactions to be submitted
+  const results = await Promise.all(incrementPromises);
+
+  // Wait for all transactions to be mined in parallel
+  await Promise.all(
+    results.map(async ({ tx, index }) => {
+      await tx.wait();
+      console.log(chalk.green(`✅ Cross-chain increment #${index} confirmed!`));
+      console.log(chalk.cyan(`📝 Transaction hash: ${chalk.bold(tx.hash)}`));
+    })
+  );
 
   console.log(
-    chalk.green("\n✅ All cross-chain increments initiated successfully!")
+    chalk.green("\n✅ All cross-chain increments confirmed successfully!")
   );
+
+  // Close readline interface before exiting
+  rl.close();
 }
 
-main()
-  .then(() => process.exit(0))
-  .catch((error) => {
-    console.error(error);
-    process.exit(1);
-  });
+main().catch((error) => {
+  console.error(error);
+  rl.close();
+  process.exit(1);
+});
