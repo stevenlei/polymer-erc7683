@@ -30,6 +30,17 @@ async function main() {
   );
   const counter = await CrossChainCounter.attach(contractAddress);
 
+  // Get the batch hash first
+  console.log(chalk.yellow("\n🔍 Getting batch hash..."));
+  const batchHash = await counter.generateRepaymentBatchHash();
+  
+  if (batchHash === "0x0000000000000000000000000000000000000000000000000000000000000000") {
+    console.log(chalk.red("\n❌ No pending repayments found!"));
+    return;
+  }
+  
+  console.log(chalk.green(`\n✅ Batch hash generated: ${chalk.bold(batchHash)}`));
+
   // Execute repayments
   console.log(chalk.yellow("\n💰 Executing batch repayments..."));
   const executeTx = await counter.executeRepayments();

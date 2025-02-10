@@ -4,9 +4,24 @@ const chalk = require("chalk");
 
 const { CHAINS } = require("../config/chains");
 
-// Contract ABI (only the events and functions we need)
-const CONTRACT_ABI =
-  require("../artifacts/contracts/CrossChainCounter.sol/CrossChainCounter.json").abi;
+// Contract ABI (only the functions we need)
+const CONTRACT_ABI = [
+  // ERC7683 events
+  "event Open(bytes32 indexed orderId, tuple(address user, uint256 originChainId, uint32 openDeadline, uint32 fillDeadline, bytes32 orderId, tuple(bytes32 token, uint256 amount, bytes32 recipient, uint256 chainId)[] maxSpent, tuple(bytes32 token, uint256 amount, bytes32 recipient, uint256 chainId)[] minReceived, tuple(uint64 destinationChainId, bytes32 destinationSettler, bytes originData)[] fillInstructions) resolvedOrder)",
+  "event Fill(bytes32 indexed orderId, address indexed filler, bytes fillerData)",
+  "event Execute(bytes32 indexed orderId, bool indexed success, bytes message)",
+  "event Cancel(bytes32 indexed orderId)",
+  // ERC7683 functions
+  "function fill(bytes32 orderId, bytes calldata originData, bytes calldata fillerData) external",
+  "function openFor(tuple(address originSettler, address user, uint256 nonce, uint256 originChainId, uint32 openDeadline, uint32 fillDeadline, bytes32 orderDataType, bytes orderData) order, bytes calldata signature, bytes calldata originFillerData) external",
+  "function execute(bytes32 orderId, bytes calldata proof) external",
+  "function cancel(bytes32 orderId) external",
+  // Custom contract events and functions
+  "function repayFillers(bytes calldata proof, tuple(bytes32 orderId, address filler, bool processed)[] calldata repaymentData) external",
+  "function pendingRepayments(uint256 index) external view returns (tuple(bytes32 orderId, address filler, bool processed))",
+  "event FillerRepaidBatch(bytes32[] orderIds, address[] fillers)",
+  "event RepaymentBatchExecuted(bytes32 indexed batchHash, uint256 indexed startIndex, uint256 indexed endIndex)",
+];
 
 class ChainListener {
   constructor(chainConfig, wallet) {
@@ -45,18 +60,21 @@ class ChainListener {
       )
     );
 
-    // Listen for FillerRepaid events
-    this.contract.on("FillerRepaid", async (orderId, filler, event) => {
+    // Listen for FillerRepaidBatch events
+    this.contract.on("FillerRepaidBatch", async (orderIds, fillers, event) => {
+      console.log(chalk.cyan("\n📦 Batch repayment detected!"));
+      console.log(chalk.cyan(`Transaction Hash: ${event.transactionHash}`));
+      console.log(chalk.cyan(`Block Number: ${event.blockNumber}`));
+
+      console.log(chalk.cyan("\nRepayments in batch:"));
+      for (let i = 0; i < orderIds.length; i++) {
+        console.log(chalk.cyan(`\nRepayment ${i + 1}:`));
+        console.log(chalk.cyan(`  Order ID: ${orderIds[i]}`));
+        console.log(chalk.cyan(`  Filler: ${fillers[i]}`));
+      }
+
       console.log(
-        chalk.green(
-          `\n✅ Filler repayment confirmed for order ${chalk.bold(orderId)}`
-        )
-      );
-      console.log(chalk.cyan(`>  Filler address: ${chalk.bold(filler)}`));
-      console.log(
-        chalk.cyan(
-          `>  Transaction hash: ${chalk.bold(event.log.transactionHash)}`
-        )
+        chalk.green(`\n✅ Successfully processed ${orderIds.length} repayments`)
       );
     });
 

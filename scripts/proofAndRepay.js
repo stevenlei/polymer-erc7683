@@ -10,8 +10,10 @@ const OPTIMISM_SEPOLIA_RPC = "https://sepolia.optimism.io";
 
 // Contract ABI (only the functions we need)
 const CONTRACT_ABI = [
-  "function repayFillers(bytes calldata proof) external",
+  "function repayFillers(bytes calldata proof, tuple(bytes32 orderId, address filler, bool processed)[] calldata repaymentData) external",
+  "function pendingRepayments(uint256 index) external view returns (tuple(bytes32 orderId, address filler, bool processed))",
   "event FillerRepaid(bytes32 orderId, address filler)",
+  "event RepaymentBatchExecuted(bytes32 indexed batchHash, uint256 indexed startIndex, uint256 indexed endIndex)",
 ];
 
 // Create readline interface
@@ -38,7 +40,13 @@ async function main() {
     chalk.blue(`\n🔑 Using wallet address: ${chalk.bold(baseWallet.address)}`)
   );
 
-  // Create contract instance
+  // Create contract instances for both chains
+  const baseContract = new ethers.Contract(
+    process.env.BASE_SEPOLIA_CONTRACT_ADDRESS,
+    CONTRACT_ABI,
+    baseWallet
+  );
+
   const optimismContract = new ethers.Contract(
     process.env.OPTIMISM_SEPOLIA_CONTRACT_ADDRESS,
     CONTRACT_ABI,
@@ -62,6 +70,78 @@ async function main() {
   console.log(chalk.green("\n✅ Transaction receipt found!"));
   console.log(chalk.cyan(`Block Number: ${chalk.bold(receipt.blockNumber)}`));
   console.log(chalk.cyan(`Position in Block: ${chalk.bold(receipt.index)}`));
+
+  // Get the RepaymentBatchExecuted event from the receipt
+  console.log(chalk.yellow("\n🔍 Looking for RepaymentBatchExecuted event..."));
+
+  const repaymentBatchExecutedEvent = receipt.logs.find((log) => {
+    // Check if this log is from our contract
+    if (log.address.toLowerCase() !== baseContract.target.toLowerCase()) {
+      return false;
+    }
+    // Check if this is a RepaymentBatchExecuted event
+    const eventTopic = ethers.id(
+      "RepaymentBatchExecuted(bytes32,uint256,uint256)"
+    );
+    return log.topics[0] === eventTopic;
+  });
+
+  if (!repaymentBatchExecutedEvent) {
+    throw new Error("❌ RepaymentBatchExecuted event not found in transaction");
+  }
+
+  // Get batch hash and indices from topics (they're all indexed)
+  const batchHash = repaymentBatchExecutedEvent.topics[1];
+  const startIndex = parseInt(repaymentBatchExecutedEvent.topics[2], 16);
+  const endIndex = parseInt(repaymentBatchExecutedEvent.topics[3], 16);
+
+  console.log(chalk.green(`✅ Found batch hash: ${chalk.bold(batchHash)}`));
+  console.log(
+    chalk.green(
+      `✅ Batch range: ${chalk.bold(startIndex)} to ${chalk.bold(endIndex)}`
+    )
+  );
+
+  // Get repayments for this specific batch
+  console.log(chalk.yellow("\n🔍 Getting repayment data..."));
+
+  let repaymentData = [];
+
+  // Only iterate over the specific batch range
+  for (let i = startIndex; i <= endIndex; i++) {
+    try {
+      const repayment = await baseContract["pendingRepayments(uint256)"](i);
+
+      // Include all repayments in this batch range
+      repaymentData.push({
+        orderId: repayment.orderId,
+        filler: repayment.filler,
+        processed: repayment.processed,
+      });
+    } catch (e) {
+      console.log(chalk.red(`Error fetching repayment at index ${i}:`, e));
+      break;
+    }
+  }
+
+  if (repaymentData.length === 0) {
+    throw new Error(
+      "No repayments found in the transaction that emitted the batch hash"
+    );
+  }
+
+  console.log(
+    chalk.green(`✅ Found ${repaymentData.length} repayments to process`)
+  );
+
+  // Log the repayment details
+  console.log(chalk.cyan("\nRepayment Details:"));
+  repaymentData.forEach((repayment, i) => {
+    console.log(chalk.cyan(`\nRepayment ${i + 1}:`));
+    console.log(chalk.cyan(`  Order ID: ${repayment.orderId}`));
+    console.log(chalk.cyan(`  Filler: ${repayment.filler}`));
+    console.log(chalk.cyan(`  Processed: ${repayment.processed}`));
+  });
 
   // Request proof from Polymer API
   console.log(chalk.yellow("\n⚡ Requesting proof from Polymer API..."));
@@ -141,22 +221,35 @@ async function main() {
   // Convert proof to bytes
   const proofInBytes = `0x${Buffer.from(proof, "base64").toString("hex")}`;
 
-  // Call repayFillers with the proof on Optimism Sepolia
-  console.log(
-    chalk.yellow(
-      "\n💰 Calling repayFillers with the proof on Optimism Sepolia..."
-    )
-  );
+  // Process repayments on Optimism
+  console.log(chalk.yellow("\n💰 Processing repayments on Optimism..."));
 
   try {
-    const tx = await optimismContract.repayFillers(proofInBytes);
+    // First estimate gas to get a better error message if it fails
+    const gasEstimate = await optimismContract.repayFillers.estimateGas(
+      proofInBytes,
+      repaymentData
+    );
 
-    const receipt = await tx.wait();
+    console.log(chalk.cyan(`Estimated gas: ${gasEstimate.toString()}`));
+
+    const repayTx = await optimismContract.repayFillers(
+      proofInBytes,
+      repaymentData,
+      {
+        gasLimit: Math.floor(gasEstimate.toString() * 1.2), // Add 20% buffer
+      }
+    );
+
+    console.log(chalk.cyan(`Transaction hash: ${repayTx.hash}`));
+    console.log(chalk.yellow("Waiting for transaction confirmation..."));
+
+    const repayReceipt = await repayTx.wait();
 
     // Calculate gas costs
-    const gasUsed = BigInt(receipt.gasUsed);
-    const gasLimit = BigInt(tx.gasLimit);
-    const gasPrice = BigInt(receipt.gasPrice);
+    const gasUsed = BigInt(repayReceipt.gasUsed);
+    const gasLimit = BigInt(repayTx.gasLimit);
+    const gasPrice = BigInt(repayReceipt.gasPrice);
 
     const totalCost = gasUsed * gasPrice;
     const gasPriceInEth = ethers.formatEther(gasPrice.toString());
@@ -184,14 +277,14 @@ async function main() {
 
     // Add block and status info
     console.log(chalk.cyan("\nBlock Info:"));
-    console.log(`>  Block Number: ${chalk.bold(receipt.blockNumber)}`);
-    console.log(`>  Transaction Hash: ${chalk.bold(receipt.hash)}`);
+    console.log(`>  Block Number: ${chalk.bold(repayReceipt.blockNumber)}`);
+    console.log(`>  Transaction Hash: ${chalk.bold(repayReceipt.hash)}`);
 
     console.log(chalk.green("\n✅ Transaction confirmed!"));
 
     // Parse FillerRepaid events
     const fillerRepaidEvents = [];
-    for (const log of receipt.logs) {
+    for (const log of repayReceipt.logs) {
       try {
         const parsed = optimismContract.interface.parseLog(log);
         if (parsed && parsed.name === "FillerRepaid") {
@@ -217,8 +310,7 @@ async function main() {
       console.log(chalk.yellow("\n⚠️ No repayment events found"));
     }
   } catch (error) {
-    console.error(chalk.red("\n❌ Validation failed:"), error);
-    process.exit(1);
+    console.error(chalk.red("\n❌ Error:"), error);
   }
 
   // Close readline interface
